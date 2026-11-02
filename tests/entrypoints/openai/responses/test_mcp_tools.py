@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import socket
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -307,3 +310,77 @@ class TestMCPEnabled:
         )
 
         validate_streaming_event_stack(events, pairs_of_event_types)
+
+
+@asynccontextmanager
+async def serve_test_mcp(app):
+    import uvicorn
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        server = uvicorn.Server(uvicorn.Config(app.sse_app(), log_level="error"))
+        task = asyncio.create_task(server.serve(sockets=[sock]))
+        try:
+            async with asyncio.timeout(10):
+                while not server.started:
+                    if task.done():
+                        await task
+                        raise RuntimeError("MCP server stopped before startup")
+                    await asyncio.sleep(0.01)
+            yield f"127.0.0.1:{sock.getsockname()[1]}"
+        finally:
+            server.should_exit = True
+            await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pages", [1, 3])
+async def test_mcp_discovers_tools_after_empty_pages(pages):
+    from mcp.server.mcpserver import MCPServer
+    from mcp.types import ListToolsResult
+
+    class PagedServer(MCPServer):
+        async def _handle_list_tools(self, ctx, params):
+            tools = await self.list_tools()
+            cursor = params.cursor if params else None
+            if pages == 1:
+                return ListToolsResult(tools=tools)
+            if cursor is None:
+                return ListToolsResult(tools=tools[:1], next_cursor="")
+            if cursor == "":
+                return ListToolsResult(tools=[], next_cursor="last")
+            assert cursor == "last"
+            return ListToolsResult(tools=tools[1:])
+
+    app = PagedServer("paged")
+    app.add_tool(lambda: "first", name="first_page")
+    app.add_tool(lambda: "last", name="last_page")
+    async with serve_test_mcp(app) as url:
+        server = MCPToolServer()
+        await server.add_tool_server(url)
+        description = server.get_tool_description("paged")
+        assert description is not None
+        assert [tool.name for tool in description.tools] == ["first_page", "last_page"]
+        filtered = server.get_tool_description("paged", allowed_tools=["last_page"])
+        assert filtered is not None
+        assert [tool.name for tool in filtered.tools] == ["last_page"]
+        async with server.new_session("paged", "test") as session:
+            result = await session.call_tool("last_page", {})
+        assert not result.is_error
+        assert result.content[0].text == "last"
+
+
+@pytest.mark.asyncio
+async def test_mcp_rejects_repeated_tool_list_cursor():
+    from mcp.server.mcpserver import MCPServer
+    from mcp.types import ListToolsResult
+
+    class RepeatingServer(MCPServer):
+        async def _handle_list_tools(self, ctx, params):
+            return ListToolsResult(tools=[], next_cursor="same")
+
+    async with serve_test_mcp(RepeatingServer("repeating")) as url:
+        async with asyncio.timeout(10):
+            with pytest.raises(ExceptionGroup) as error:
+                await MCPToolServer().add_tool_server(url)
+        assert "Repeated MCP tools/list cursor" in repr(error.value)

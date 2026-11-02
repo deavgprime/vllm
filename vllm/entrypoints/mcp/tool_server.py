@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 async def list_server_and_tools(server_url: str):
     from mcp import ClientSession
     from mcp.client.sse import sse_client
+    from mcp.types import PaginatedRequestParams
 
     async with (
         sse_client(url=server_url) as streams,
@@ -27,6 +28,17 @@ async def list_server_and_tools(server_url: str):
     ):
         initialize_response = await session.initialize()
         list_tools_response = await session.list_tools()
+        seen_cursors: set[str] = set()
+        while list_tools_response.next_cursor is not None:
+            cursor = list_tools_response.next_cursor
+            if cursor in seen_cursors:
+                raise ValueError("Repeated MCP tools/list cursor")
+            seen_cursors.add(cursor)
+            page = await session.list_tools(
+                params=PaginatedRequestParams(cursor=cursor)
+            )
+            list_tools_response.tools.extend(page.tools)
+            list_tools_response.next_cursor = page.next_cursor
         return initialize_response, list_tools_response
 
 

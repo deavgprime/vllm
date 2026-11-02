@@ -196,6 +196,11 @@ The following extra parameters are supported:
 
 ### Responses API
 
+For MCP servers configured with `--tool-server`, vLLM follows `tools/list`
+pagination before building the available tool descriptions. Tools on later pages
+are included in discovery and can be selected with `allowed_tools`. A repeated
+pagination cursor is treated as a server error instead of looping indefinitely.
+
 Our Responses API is compatible with [OpenAI's Responses API](https://platform.openai.com/docs/api-reference/responses);
 you can use the [official OpenAI Python client](https://github.com/openai/openai-python) to interact with it.
 
