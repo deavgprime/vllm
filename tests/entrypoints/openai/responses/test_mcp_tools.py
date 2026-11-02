@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import socket
+from contextlib import AsyncExitStack, asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -307,3 +310,51 @@ class TestMCPEnabled:
         )
 
         validate_streaming_event_stack(events, pairs_of_event_types)
+
+
+@asynccontextmanager
+async def serve_test_mcp(app):
+    import uvicorn
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        server = uvicorn.Server(uvicorn.Config(app.sse_app(), log_level="error"))
+        task = asyncio.create_task(server.serve(sockets=[sock]))
+        try:
+            async with asyncio.timeout(10):
+                while not server.started:
+                    if task.done():
+                        await task
+                        raise RuntimeError("MCP server stopped before startup")
+                    await asyncio.sleep(0.01)
+            yield f"127.0.0.1:{sock.getsockname()[1]}"
+        finally:
+            server.should_exit = True
+            await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duplicate_name", [False, True])
+async def test_mcp_advertised_tools_match_execution_server(duplicate_name):
+    from mcp.server.mcpserver import MCPServer
+
+    first = MCPServer("shared")
+    second = MCPServer("shared" if duplicate_name else "other")
+    first.add_tool(lambda: "first result", name="first_only")
+    second.add_tool(lambda: "second result", name="second_only")
+    async with AsyncExitStack() as stack:
+        first_url = await stack.enter_async_context(serve_test_mcp(first))
+        second_url = await stack.enter_async_context(serve_test_mcp(second))
+        server = MCPToolServer()
+        await server.add_tool_server(f"{first_url},{second_url}")
+        expected = {"shared": ("first_only", "first result")}
+        if not duplicate_name:
+            expected["other"] = ("second_only", "second result")
+        for namespace, (tool, result_text) in expected.items():
+            description = server.get_tool_description(namespace)
+            assert description is not None
+            assert [item.name for item in description.tools] == [tool]
+            async with server.new_session(namespace, "test") as session:
+                result = await session.call_tool(tool, {})
+            assert not result.is_error
+            assert result.content[0].text == result_text

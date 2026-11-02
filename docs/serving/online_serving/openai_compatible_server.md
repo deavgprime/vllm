@@ -196,6 +196,11 @@ The following extra parameters are supported:
 
 ### Responses API
 
+When configuring multiple MCP servers with `--tool-server`, give each server a
+unique name in its MCP initialization response. If names are duplicated, vLLM
+uses the first server's tool descriptions and execution endpoint and ignores
+later servers with that name.
+
 Our Responses API is compatible with [OpenAI's Responses API](https://platform.openai.com/docs/api-reference/responses);
 you can use the [official OpenAI Python client](https://github.com/openai/openai-python) to interact with it.
 

@@ -129,8 +129,8 @@ class MCPToolServer(ToolServer):
                     for tool in list_tools_response.tools
                 ],
             )
-            self.harmony_tool_descriptions[tool_from_mcp.name] = tool_from_mcp
             if tool_from_mcp.name not in self.urls:
+                self.harmony_tool_descriptions[tool_from_mcp.name] = tool_from_mcp
                 self.urls[tool_from_mcp.name] = url
             else:
                 logger.warning(
